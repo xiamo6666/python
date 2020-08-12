@@ -5,34 +5,29 @@ import subprocess as sp
 import time
 import threading as thread
 import logging
+import multiprocessing as mp
 
 logging.basicConfig(level=logging.INFO,
-                    format='%(asctime)s-ThreadName: %(threadName)s-pid:%(process)d-%(message)s')
+                    format='%(asctime)s----%(message)s')
 log = logging.getLogger()
+monitor_guard_thread = {}
+monitor_dict = {}
 
 
 class MonitorControl:
 
-    def __init__(self):
+    def __init__(self, ip, rtmp_url):
         self.process = None
         self.rascal = None
-        self.ip = None
-        self.rtmp_url = None
-
-    def stop_thread(self):
-        """
-        停止线程及其子进程
-        """
-        try:
-            monitor_ips.remove(self.ip)
-        except Exception:
-            print(monitor_ips)
+        self.monitor_dict_s = None
+        self.monitor_ips_s = None
+        self.ip = ip
+        self.rtmp_url = rtmp_url
 
     def stop_process(self):
-        log.info("ffmpeg进程结束中")
-        while self.process.poll() is None:
-            self.process.kill()
-        log.info("ffmpeg进程结束完成")
+        if self.process is not None:
+            while self.process.poll() is None:
+                self.process.kill()
 
     def start_command(self):
         """
@@ -61,10 +56,7 @@ class MonitorControl:
         self.process = sp.Popen(command, stdin=sp.PIPE, stderr=sp.STDOUT, stdout=open("process.out", "w"), bufsize=-1,
                                 shell=False)
 
-        th1 = thread.Thread(target=self.monitor_process)
-        th1.start()
-
-    def check_ip(self, ip, rtmp_url):
+    def check_ip(self):
         """
         验证ip可达；
         创建创建读取rtsp对象
@@ -72,42 +64,29 @@ class MonitorControl:
         :param rtmp_url:
         :return:
         """
-        status = sp.call(["ping", "-c", "2", ip])
-        self.ip = ip
-        self.rtmp_url = rtmp_url
-        repeat_count_ = 0
+        status = sp.call(["ping", "-c", "5", self.ip])
+        repeat_count_ = 1
         while status != 0:
-            log.info("摄像头{}未激活".format(ip))
-            status = sp.call(["ping", "-c", "2", ip])
-            if status == 0:
-                log.info("摄像头已激活,进入推流模式")
+            log.error("摄像头{}未激活".format(self.ip))
+            status = sp.call(["ping", "-c", "5", self.ip])
+            if status == 1:
+                log.info("摄像头ip:{}激活成功,进入推流模式".format(self.ip))
                 break
             if repeat_count_ == 3:
                 print("超时退出")
-                log.info("摄像头:{}未激活,已重试3次".format(ip))
-                break
+                log.error("摄像头ip:{}未激活,进程已停止".format(self.ip))
+                rc.srem('monitor_ips', self.ip)
+                return
             repeat_count_ += 1
-        self.rascal = cv2.VideoCapture('rtsp://admin:admin@{}:554/bs1'.format(ip))
+        self.rascal = cv2.VideoCapture('rtsp://admin:admin@{}:554/bs1'.format(self.ip))
         if self.rascal.isOpened():
             self.start_command()
             try:
                 self.push_stream()
             except Exception as e2:
                 print(e2)
-            try:
-                self.stop_process()
-            except Exception as e3:
-                print(e3)
-        self.stop_thread()
-
-    def monitor_process(self):
-        log.info("开始进行ffmpeg进程进行监控")
-        show_time = time.time()
-        while self.process.poll() is None:
-            if int(time.time() - show_time) >= 10:
-                log.info("ffmpe推流进程正在稳定运行中")
-                show_time = time.time()
-        log.info("ffmpe推流进程已经正常结束")
+        self.stop_process()
+        rc.srem('monitor_ips', self.ip)
 
     def push_stream(self):
         """
@@ -119,7 +98,6 @@ class MonitorControl:
         while self.rascal.isOpened():
             ok, next_frame = self.rascal.read()  # read_latest_frame() 替代 read()
             if not ok:
-                if cv2.waitKey(100) & 0xFF == ord('q'): break
                 not_ok_count += 1
                 if not_ok_count >= 10: break
                 continue
@@ -129,65 +107,66 @@ class MonitorControl:
                 self.process.stdin.write(next_frame)
             except Exception as ex:
                 log.info("ffmpe进程推流失败，异常信息{}".format(ex))
-                if monitor_dict.get(self.ip) is not None:
-                    self.stop_process()
-                    self.start_command()
+                self.stop_process()
+                break
             if int(time.time() - times) >= 10:
-                log.info("OpenCV取流线程进行稳定运行中")
+                log.info(self.ip + ":摄像头稳定运行中")
                 times = time.time()
-            if monitor_dict.get(self.ip) is None:
-                log.info("收到关闭指令，OpenCV线程关闭成功")
+            if not rc.sismember('monitor_ips', self.ip):
+                log.info(self.ip + ":直播结束")
                 break
 
 
-def monitor_thread(th1, ip, push_url):
-    push_stream = th1
-    retry_count = 0
+def monitor_thread():
     """
-    守护线程 守护5次
+    守护线程
     """
-    while retry_count < 5:
-        time2 = time.time()
-        while push_stream.is_alive():
-            if int(time.time() - time2) > 120 and retry_count > 0:
-                retry_count = 0
-                log.info("工作线程持续工作120秒以上，清空连接次数")
-        if monitor_dict.get(ip) is None:
-            log.info("收到关闭指令，守护进程结束")
-            break
-        log.info("守护线程保护成功")
-        monitor_ips.append(ip)
-        monitor_control_retry = MonitorControl()
-        thread_retry = thread.Thread(target=monitor_control_retry.check_ip, args=(ip, push_url))
-        thread_retry.start()
-        monitor_dict[ip] = monitor_control_retry
-        push_stream = thread_retry
-        retry_count += 1
-    if retry_count >= 5:
-        log.info("守护线程连续5次守护失败，请检查摄像头是否休眠")
-        monitor_ips.remove(ip)
+    while True:
+        time.sleep(0.1)
+        if monitor_dict is not None and len(monitor_dict) > 0:
+            for ips in list(monitor_dict):
+                if not rc.sismember('monitor_ips', ips):
+                    if monitor_dict[ips] is not None:
+                        if monitor_guard_thread.__contains__(ips) and monitor_guard_thread[ips] == 3:
+                            log.info('摄像头ip:{}守护线程保护3次完成、已经停止守护'.format(ips))
+                            del monitor_guard_thread[ips]
+                            try:
+                                del monitor_dict[ips]
+                            except Exception:
+                                pass
+                        else:
+                            mp.Process(target=monitor_dict[ips].check_ip).start()
+                            rc.sadd('monitor_ips', ips)
+                            if not monitor_guard_thread.__contains__(ips):
+                                monitor_guard_thread[ips] = 1
+                            log.info('摄像头ip:%s守护线程保护第:%d成功' % (ips, monitor_guard_thread[ips]))
+                            monitor_guard_thread[ips] += 1
 
 
 if __name__ == '__main__':
-    rc = redis.StrictRedis(host='10.10.11.189', port=6379, password='ebit')
+    rc = redis.StrictRedis(host='127.0.0.1', port=6379, password='ebit')
+    # 每次启动删除清空redis
+    rc.delete('monitor_ips')
+    # 启动一个守护线程
     ps = rc.pubsub()
-    monitor_ips = []
-    monitor_dict = {}
+    thread.Thread(target=monitor_thread).start()
     ps.subscribe('OpenMonitor')
     for item in ps.listen():
         if item.get('type') == 'message':
             parm_list = item.get('data').decode().strip('"').split('==')
             if parm_list.__len__() == 2:
                 if parm_list[0] == 'close':
-                    monitor_device = monitor_dict.get(parm_list[1])
-                    if monitor_device is not None:
-                        del monitor_dict[parm_list[1]]
-                        continue
-                if not set(monitor_ips).__contains__(parm_list[0]):
-                    monitor_ips.append(parm_list[0])
-                    monitor_control = MonitorControl()
-                    th = thread.Thread(target=monitor_control.check_ip, args=(parm_list[0], parm_list[1]))
-                    th.start()
+                    if monitor_dict is not None and len(monitor_dict) > 0:
+                        try:
+                            del monitor_dict[parm_list[1]]
+                        except Exception as ex1:
+                            pass
+                        rc.srem("monitor_ips", parm_list[1])
+                        log.info("{}:收到关闭指令".format(parm_list[1]))
+                    continue
+                if not rc.sismember("monitor_ips", parm_list[0]):
+                    rc.sadd("monitor_ips", parm_list[0])
+                    log.info('{}:收到打开指令'.format(parm_list[0]))
+                    monitor_control = MonitorControl(parm_list[0], parm_list[1])
                     monitor_dict[parm_list[0]] = monitor_control
-                    # 加入守护线程
-                    thread.Thread(target=monitor_thread, args=(th, parm_list[0], parm_list[1])).start()
+                    mp.Process(target=monitor_control.check_ip).start()
