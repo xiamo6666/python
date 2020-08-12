@@ -48,7 +48,9 @@ class Photograph:
             log.info("摄像头未激活")
 
     def control(self):
-        rascal = RTSCapture.create('rtsp://admin:admin@{}:554/bs1'.format(self.ip))
+
+        # rascal = RTSCapture.create('rtsp://admin:admin@{}:554/bs1'.format(self.ip))
+        rascal = RTSCapture.create('rtsp://admin:ebit123.@{}:554/Streaming/Channels/1'.format(self.ip))
         rascal.start_read()  # 启动子线程并改变 read_latest_frame 的指向
         start_time = time.time()
 
