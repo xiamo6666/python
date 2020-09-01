@@ -36,26 +36,19 @@ class MonitorControl:
         :param args:
         :return:
         """
-
-        fps = int(self.rascal.get(cv2.CAP_PROP_FPS))
-        width = int(self.rascal.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(self.rascal.get(cv2.CAP_PROP_FRAME_HEIGHT))
         command = ['/Users/xiamo/Documents/ffmpeg',
-                   '-y',
-                   '-f', 'rawvideo',
-                   '-vcodec', 'rawvideo',
-                   '-pix_fmt', 'bgr24',
-                   '-s', "{}x{}".format(width, height),
-                   '-r', str(fps),
-                   '-i', '-',
-                   '-c:v', 'libx264',
-                   '-pix_fmt', 'yuv420p',
-                   '-preset', 'ultrafast',
+                   '-rtsp_transport', 'tcp',
+                   '-re', '-i',
+                   'rtsp://admin:admin@{}:554/bs1'.format(self.ip),
+                   '-vcodec', 'copy',
+                   '-acodec', 'copy',
                    '-f', 'flv',
                    self.rtmp_url]
-
-        self.process = sp.Popen(command, stdin=sp.PIPE, stderr=sp.STDOUT, stdout=open("process.out", "w"), bufsize=-1,
-                                shell=False)
+        # self.process = sp.call(command)
+        # self.process = sp.Popen(command, stdin=sp.PIPE, stderr=sp.STDOUT, stdout=open("process.out", "w"), bufsize=-1,
+        #                         shell=False)
+        # self.process = sp.run(command)
+        sp.run(command)
 
     def check_ip(self):
         """
@@ -79,13 +72,10 @@ class MonitorControl:
                 rc.srem('monitor_ips', '"' + self.ip + '"')
                 return
             repeat_count_ += 1
-        self.rascal = cv2.VideoCapture('rtsp://admin:admin@{}:554/bs1'.format(self.ip))
-        if self.rascal.isOpened():
+        try:
             self.start_command()
-            try:
-                self.push_stream()
-            except Exception as e2:
-                print(e2)
+        except Exception as e2:
+            print(e2)
         self.stop_process()
         rc.srem('monitor_ips', '"' + self.ip + '"')
 
